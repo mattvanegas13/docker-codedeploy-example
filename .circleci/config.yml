@@ -1,0 +1,68 @@
+version: 2.1
+orbs:
+  aws-ecr: circleci/aws-ecr@7.3.0
+  aws-ecs: circleci/aws-ecs@2.2.1
+jobs:
+  test:
+    docker:
+      - image: circleci/python:3.10.1
+    steps:
+      - checkout
+      - restore_cache:
+          key: deps1-{{ .Branch }}-{{ checksum "requirements.txt" }}
+      - run:
+          name: Setup VirtualEnv
+          command: |
+            python3 -m venv myenv
+            . myenv/bin/activate
+            pip install --upgrade pip
+            pip install -r requirements.txt
+      - save_cache:
+          key: deps1-{{ .Branch }}-{{ checksum "requirements.txt" }}
+          paths:
+            - "myenv"
+      - run:
+          name: Running tests
+          command: |
+            . myenv/bin/activate
+            python3 manage.py test
+      - store_artifacts:
+          path: test-reports/
+          destination: python_app
+
+
+workflows:
+  version: 2
+  test-and-build:
+    jobs:
+      - test
+      - aws-ecr/build-and-push-image:
+          repo: "mock_cba"
+          tag: "${CIRCLE_BRANCH}_${CIRCLE_SHA1},${CIRCLE_BRANCH}_latest"
+          requires:
+            - test
+          filters:
+            branches:
+              only:
+                - master
+                - development
+      - aws-ecs/deploy-service-update:
+          name: deploy-development
+          requires:
+            - aws-ecr/build-and-push-image 
+          family: "DeployTask"  
+          cluster-name: "cba-development"
+          service-name: "WebApp"
+          container-image-name-updates: "container=CBA-development,tag=${CIRCLE_BRANCH}_${CIRCLE_SHA1}"
+          filters:
+            branches:
+              only:
+                - development
+      - approve-deploy:
+          type: approval
+          requires:
+            - aws-ecr/build-and-push-image
+          filters:
+            branches:
+              only:
+                - master
